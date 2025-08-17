@@ -1,3 +1,10 @@
+"""
+Exercise #1: Low-Rank Model Compression
+In this exercise you will train a reasonably light-weight, dense, feed-forward neural network
+on the standard MNIST dataset. After training, you will perform various degrees of low-rank
+matrix approximation (SVD-based) on the weight matrices of this model, then perform
+refinement training and finally report the test results of the compressed model(s).
+"""
 import os, sys, numpy as np, tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -217,7 +224,7 @@ def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epoc
 def main():
     """Run baseline training then all compression/refinement runs; return collected results."""
     set_seeds(42)
-    baseline_model, data, base_hist, base_cm = step1(baseline_epochs=100)
+    baseline_model, data, base_hist, base_cm = step1(baseline_epochs)
     baseline_params = count_params(baseline_model)  # after step1
     compression_results = step4(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=100)
     return {
@@ -227,4 +234,4 @@ def main():
     }
 
 if __name__ == '__main__':
-    main()
+    main()=100
