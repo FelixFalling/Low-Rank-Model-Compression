@@ -1,8 +1,9 @@
-"""Exercise #1: Low-Rank Model Compression
-
-This script implements four clearly separated steps for the MNIST low‑rank compression
-exercise. Each block of related functions is delimited with bold divider comment lines
-so it's obvious where Step 1, Step 2, Step 3, and Step 4 reside.
+"""
+Exercise #1: Low-Rank Model Compression
+In this exercise you will train a reasonably light-weight, dense, feed-forward neural network
+on the standard MNIST dataset. After training, you will perform various degrees of low-rank
+matrix approximation (SVD-based) on the weight matrices of this model, then perform
+refinement training and finally report the test results of the compressed model(s).
 """
 
 import os, numpy as np, tensorflow as tf
@@ -60,12 +61,28 @@ Train your model on MNIST for 100 epochs, report the training/test loss and accu
 each epoch; include a 10x10 confusion matrix for the test data results on the fully trained
 model.
 """
+def step1(baseline_epochs=BASELINE_EPOCHS):
+    """Wrapper for Step 1: returns (model, data, history, confusion_matrix)."""
+    data = load_and_preprocess_mnist()
+    model, hist, cm = step1_train_baseline(data, epochs=baseline_epochs)
+    return model, data, hist, cm
+
 def load_and_preprocess_mnist():
     """Load MNIST, scale to [0,1], flatten to 784 features."""
     (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
     x_train = (x_train.astype('float32') / 255.0).reshape(-1, 28*28)
     x_test  = (x_test.astype('float32')  / 255.0).reshape(-1, 28*28)
     return (x_train, y_train), (x_test, y_test)
+
+def step1_train_baseline(data, epochs=BASELINE_EPOCHS):
+    """Train baseline model for the specified number of epochs."""
+    model = build_baseline_model()
+    print("\nBaseline model summary")
+    model.summary()
+    print(f"Trainable params (baseline): {count_params(model)}")
+    hist, cm = train_and_report(model, data, epochs, tag='Baseline(100-50-10)')
+    return model, hist, cm
+
 
 def build_baseline_model():
     """Create baseline dense network: 784 -> 100 -> 50 -> 10."""
@@ -79,21 +96,6 @@ def build_baseline_model():
                   loss='sparse_categorical_crossentropy',
                   metrics=['accuracy'])
     return model
-
-def step1_train_baseline(data, epochs=BASELINE_EPOCHS):
-    """Train baseline model for the specified number of epochs."""
-    model = build_baseline_model()
-    print("\nBaseline model summary ===")
-    model.summary()
-    print(f"Trainable params (baseline): {count_params(model)}")
-    hist, cm = train_and_report(model, data, epochs, tag='Baseline(100-50-10)')
-    return model, hist, cm
-
-def step1(baseline_epochs=BASELINE_EPOCHS):
-    """Wrapper for Step 1: returns (model, data, history, confusion_matrix)."""
-    data = load_and_preprocess_mnist()
-    model, hist, cm = step1_train_baseline(data, epochs=baseline_epochs)
-    return model, data, hist, cm
 
 """
 Step 2: Generate the Low-Rank Model
@@ -136,9 +138,6 @@ def compress_dense_to_two(dense_layer, k):
     Uprime, V = svd_factorize(W, k)
     return Uprime, V, b.astype(np.float32)
 
-def _compressed_model_name(ranks):
-    """Build safe model name from rank list."""
-    return 'compressed_' + '_'.join(str(r) for r in ranks)
 
 def build_compressed_model(baseline_model, ranks):
     """Build compressed model using ranks [k1,k2,k3]."""
@@ -169,11 +168,9 @@ def build_compressed_model(baseline_model, ranks):
     name_to_layer['rec3'].set_weights([W3b, b3])
     return comp
 
-def step2(baseline_model, factor=2):
-    """Generate one compressed model for the given compression factor."""
-    ranks = [max(1, int(100/factor)), max(1, int(50/factor)), max(1, int(10/factor))]
-    comp = build_compressed_model(baseline_model, ranks)
-    return comp, ranks
+def _compressed_model_name(ranks):
+    """Build safe model name from rank list."""
+    return 'compressed_' + '_'.join(str(r) for r in ranks)
 
 """
 Step 3: Apply Refinement Training to the Low-Rank Model
@@ -189,10 +186,6 @@ def step3_refine_compressed(comp_model, data, epochs=COMPRESSION_REFINEMENT_EPOC
     """Fine-tune compressed model for given epochs."""
     return train_and_report(comp_model, data, epochs, tag)
 
-def step3(compressed_model, data, refine_epochs=COMPRESSION_REFINEMENT_EPOCHS, tag='Compressed'):
-    """Wrapper for Step 3 refinement."""
-    return step3_refine_compressed(compressed_model, data, epochs=refine_epochs, tag=tag)
-
 """
 Step 4: Apply Different Degrees of Compression
 
@@ -203,15 +196,13 @@ and for 8x compression, k = int(n / 8).
 
 For each compression level, include a model summary and trainable parameter count.
 """
-def k_for_compression(n, factor):
-    """Compute rank k = int(n/factor) with lower bound 1."""
-    return max(1, int(n / factor))
 
-def compute_ranks_for_factor(factor):
-    """Compute ranks [k1,k2,k3] for a compression factor."""
-    return [k_for_compression(100, factor),
-            k_for_compression(50, factor),
-            k_for_compression(10, factor)]
+def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS):
+    """Apply Steps 2 & 3 for each factor, collecting metrics/results."""
+    if baseline_params is None:
+        baseline_params = count_params(baseline_model)
+    return step4_run_all_compressions(baseline_model, data, baseline_params, factors=factors, comp_epochs=comp_epochs)
+
 
 def step4_run_all_compressions(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS):
     """For each factor perform low-rank construction + refinement; collect results."""
@@ -239,18 +230,21 @@ def step4_run_all_compressions(baseline_model, data, baseline_params, factors=(2
         }
     return results
 
-def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS):
-    """Apply Steps 2 & 3 for each factor, collecting metrics/results."""
-    if baseline_params is None:
-        baseline_params = count_params(baseline_model)
-    return step4_run_all_compressions(baseline_model, data, baseline_params, factors=factors, comp_epochs=comp_epochs)
+def compute_ranks_for_factor(factor):
+    """Compute ranks [k1,k2,k3] for a compression factor."""
+    return [k_for_compression(100, factor),
+            k_for_compression(50, factor),
+            k_for_compression(10, factor)]
 
-###############################################################################
-# ORCHESTRATOR (runs Steps 1 -> 4)                                            #
-###############################################################################
+def k_for_compression(n, factor):
+    """Compute rank k = int(n/factor) with lower bound 1."""
+    return max(1, int(n / factor))
+
+#Pipeline
 def main():
     """Run all steps sequentially and return collected results."""
     set_seeds(42)
+    print("Step 1") 
     baseline_model, data, base_hist, base_cm = step1(BASELINE_EPOCHS)
     baseline_params = count_params(baseline_model)
     compression_results = step4(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS)
