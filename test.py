@@ -1,51 +1,30 @@
+"""Exercise #1: Low-Rank Model Compression
+
+This script implements four clearly separated steps for the MNIST low‑rank compression
+exercise. Each block of related functions is delimited with bold divider comment lines
+so it's obvious where Step 1, Step 2, Step 3, and Step 4 reside.
 """
-Exercise #1: Low-Rank Model Compression
-In this exercise you will train a reasonably light-weight, dense, feed-forward neural network
-on the standard MNIST dataset. After training, you will perform various degrees of low-rank
-matrix approximation (SVD-based) on the weight matrices of this model, then perform
-refinement training and finally report the test results of the compressed model(s).
-"""
-import os, sys, numpy as np, tensorflow as tf
+
+import os, numpy as np, tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from sklearn.metrics import confusion_matrix
 
-# ================== Utility & Environment ==================
+# CONSTS 
+BASELINE_EPOCHS = 100          # Always train baseline for 100 epochs
+COMPRESSION_REFINEMENT_EPOCHS = 100  # Always refine compressed models for 100 epochs
+
 # Force CPU only execution (ignore GPUs) to simplify environment.
 os.environ.setdefault('CUDA_VISIBLE_DEVICES', '')
 
-## Support Utility
-# Set deterministic seeds for reproducibility.
+'''
+UTILITIES 
+'''
 def set_seeds(seed=42):
-    """Set RNG seeds."""
+    """Set RNG seeds for reproducibility."""
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-# ================== Step 1: Data & Baseline Model ==================
-## Step 1: Data Loading & Preprocessing
-# Load MNIST, scale to [0,1], flatten to 784 features.
-def load_and_preprocess_mnist():
-    """Load & preprocess MNIST."""
-    (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
-    x_train = (x_train.astype('float32') / 255.0).reshape(-1, 28*28)
-    x_test  = (x_test.astype('float32')  / 255.0).reshape(-1, 28*28)
-    return (x_train, y_train), (x_test, y_test)
-
-## Step 1: Baseline Model Definition (784 -> 100 -> 50 -> 10)
-def build_baseline_model():
-    """Create baseline dense network."""
-    model = keras.Sequential([
-        layers.Input(shape=(784,)),
-        layers.Dense(100, activation='relu'),
-        layers.Dense(50, activation='relu'),
-        layers.Dense(10, activation='softmax')
-    ])
-    model.compile(optimizer=keras.optimizers.Adam(),
-                  loss='sparse_categorical_crossentropy',
-                  metrics=['accuracy'])
-    return model
-
-## Steps 1 & 3: Training / Reporting Helper
 def train_and_report(model, data, epochs, tag):
     """Train model; emit per-epoch metrics & confusion matrix."""
     (x_train, y_train), (x_test, y_test) = data
@@ -62,14 +41,47 @@ def train_and_report(model, data, epochs, tag):
     print(f"\n{tag} — Confusion Matrix (10x10):\n{cm}\n")
     return hist, cm
 
-## Support: Parameter Counting
 def count_params(model):
     """Return total trainable parameter count."""
     return int(np.sum([np.prod(v.shape) for v in model.trainable_variables]))
 
-## Step 1: Design/Train the Light-Weight Model
-def step1_train_baseline(data, epochs=100):
-    """Train baseline and return (model, history, confusion matrix)."""
+"""
+Step 1: Design/Train the Light-Weight Model
+
+Train a light-weight, dense, feed-forward neural network (note: not a CNN) so that the first
+hidden layers has 100 neurons, the next hidden layer has 50, and the final output layer has 10
+neurons. All the layers should be fully-connected; layers should include conventional bias
+neurons. Include a model summary with trainable parameter counts in your write-up.
+
+Load and pre-process the MNIST dataset; report on the pre-processing procedure that you
+apply in your assignment write-up.
+
+Train your model on MNIST for 100 epochs, report the training/test loss and accuracy for
+each epoch; include a 10x10 confusion matrix for the test data results on the fully trained
+model.
+"""
+def load_and_preprocess_mnist():
+    """Load MNIST, scale to [0,1], flatten to 784 features."""
+    (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
+    x_train = (x_train.astype('float32') / 255.0).reshape(-1, 28*28)
+    x_test  = (x_test.astype('float32')  / 255.0).reshape(-1, 28*28)
+    return (x_train, y_train), (x_test, y_test)
+
+def build_baseline_model():
+    """Create baseline dense network: 784 -> 100 -> 50 -> 10."""
+    model = keras.Sequential([
+        layers.Input(shape=(784,)),
+        layers.Dense(100, activation='relu'),
+        layers.Dense(50, activation='relu'),
+        layers.Dense(10, activation='softmax')
+    ])
+    model.compile(optimizer=keras.optimizers.Adam(),
+                  loss='sparse_categorical_crossentropy',
+                  metrics=['accuracy'])
+    return model
+
+def step1_train_baseline(data, epochs=BASELINE_EPOCHS):
+    """Train baseline model for the specified number of epochs."""
     model = build_baseline_model()
     print("\nBaseline model summary ===")
     model.summary()
@@ -77,25 +89,38 @@ def step1_train_baseline(data, epochs=100):
     hist, cm = train_and_report(model, data, epochs, tag='Baseline(100-50-10)')
     return model, hist, cm
 
-## Step 1 Wrapper
-def step1(baseline_epochs=100):
-        """Step 1: Design / Train the Light-Weight Model.
+def step1(baseline_epochs=BASELINE_EPOCHS):
+    """Wrapper for Step 1: returns (model, data, history, confusion_matrix)."""
+    data = load_and_preprocess_mnist()
+    model, hist, cm = step1_train_baseline(data, epochs=baseline_epochs)
+    return model, data, hist, cm
 
-        Actions:
-            1. Load & preprocess MNIST (scale to [0,1], flatten 28x28 -> 784).
-            2. Build 784->100->50->10 dense network (bias on every Dense, ReLU hidden, softmax output).
-            3. Train for `baseline_epochs` (default 100) capturing per-epoch train & validation metrics.
-            4. Produce confusion matrix for test set.
+"""
+Step 2: Generate the Low-Rank Model
 
-        Returns:
-            (baseline_model, data_tuple, history, confusion_matrix)
-        """
-        data = load_and_preprocess_mnist()
-        model, hist, cm = step1_train_baseline(data, epochs=baseline_epochs)
-        return model, data, hist, cm
+For each weight matrix in your model: 𝑊 (") , 𝑊 ($) , 𝑊 (%) , perform SVD (fine to use a SW
+library function for this), so that 𝑊 (&) ≈ 𝑈 (&) 𝛴 (&) '𝑉 (&)) . To perform compression, your
+SVD decomposition should represent a k-rank approximation to 𝑊 (&) ; in this way, if, say,
+𝑊 (&) is of dimension 𝑚 × 𝑛, then 𝑈 (&) will be of dimension 𝑚 × 𝑘 (where 𝑘 < 𝑛), 𝛴 (&) is of
+dimension 𝑘 × 𝑘 and '𝑉 (&) ) is of dimension 𝑘 × 𝑛.
 
-# ================== Step 2: Low-Rank Decomposition (SVD) ==================
-## Step 2: Low-Rank Decomposition (SVD)
+For simplicity, as I have shown in lecture, express this decomposition as the product of two
+matrices: 𝑊 (&) ≈ 𝑈′(&) '𝑉 (&) ) , where 𝑈′(&) = 𝑈 (&) 𝛴 (&) .
+
+Define a new model – your compressed model – where each dense layer is from your 100-50-
+10 model is replaced with two dense layers (representing the factors of your low-rank
+approximation for each 𝑊 (&) ). 
+
+I recommend using the Keras function “set_weights” to manually set the weights, after
+defining your model, e.g.:
+                            model.layers[ix].set_weights(A)
+
+where above “𝑖𝑥” denotes the layer index and 𝐴 denotes the layer weight matrix. Note that
+you can randomly initialize the layer biases in your new model or copy them from the
+previously trained model – either method is fine, but please include details of your design
+decisions in your assignment write-up. Include a model summary of your compressed model
+with your assignment write-up.
+"""
 def svd_factorize(W, k):
     """Rank-k SVD factorization returning (U', V)."""
     U, S, Vt = np.linalg.svd(W, full_matrices=False)
@@ -105,19 +130,16 @@ def svd_factorize(W, k):
     Uprime = U_k @ S_k  # (m,k)
     return Uprime.astype(np.float32), Vt_k.astype(np.float32)  # V is (k,n)
 
-## Step 2: Dense Layer Factorization Helper
 def compress_dense_to_two(dense_layer, k):
-    """Factor Dense (m->n) into (m->k linear no-bias) + (k->n with activation & bias)."""
+    """Factor Dense (m->n) into (m->k linear, no bias) + (k->n with activation & bias)."""
     W, b = dense_layer.get_weights()
     Uprime, V = svd_factorize(W, k)
     return Uprime, V, b.astype(np.float32)
 
-## Support: Naming Helper
 def _compressed_model_name(ranks):
     """Build safe model name from rank list."""
     return 'compressed_' + '_'.join(str(r) for r in ranks)
 
-## Step 2: Construct Compressed Model From Baseline
 def build_compressed_model(baseline_model, ranks):
     """Build compressed model using ranks [k1,k2,k3]."""
     assert len(ranks) == 3
@@ -147,43 +169,51 @@ def build_compressed_model(baseline_model, ranks):
     name_to_layer['rec3'].set_weights([W3b, b3])
     return comp
 
-## Step 2 Wrapper
 def step2(baseline_model, factor=2):
-    """Step 2: Generate a Low-Rank (SVD) Compressed Model for one compression factor.
-
-    Computes per-layer ranks k = int(n/factor) (with lower bound 1) for n in (100,50,10), builds
-    and returns the compressed model plus the rank list.
-    """
+    """Generate one compressed model for the given compression factor."""
     ranks = [max(1, int(100/factor)), max(1, int(50/factor)), max(1, int(10/factor))]
     comp = build_compressed_model(baseline_model, ranks)
     return comp, ranks
 
-# ================== Step 3: Refinement Training ==================
-## Step 3: Refinement Training
-def step3_refine_compressed(comp_model, data, epochs=10, tag='Compressed'):
+"""
+Step 3: Apply Refinement Training to the Low-Rank Model
+
+Train your compressed model for 10 epochs. Report the training and test loss and accuracy for
+each epoch. Include a 10x10 confusion matrix for the test data results on the fully trained model.
+
+Note: Do not randomly initialize the weights of your compressed model prior to training.
+Instead, use the weights learned from the low-rank approximation with the set_weights function,
+as described in Step 2 above.
+"""
+def step3_refine_compressed(comp_model, data, epochs=COMPRESSION_REFINEMENT_EPOCHS, tag='Compressed'):
     """Fine-tune compressed model for given epochs."""
     return train_and_report(comp_model, data, epochs, tag)
 
-## Step 3 Wrapper
-def step3(compressed_model, data, refine_epochs=10, tag='Compressed'):
-    """Step 3: Refinement (fine-tuning) of previously constructed compressed model."""
+def step3(compressed_model, data, refine_epochs=COMPRESSION_REFINEMENT_EPOCHS, tag='Compressed'):
+    """Wrapper for Step 3 refinement."""
     return step3_refine_compressed(compressed_model, data, epochs=refine_epochs, tag=tag)
 
-# ================== Step 4: Multiple Compression Levels ==================
-## Step 4: Rank Calculation Helper
+"""
+Step 4: Apply Different Degrees of Compression
+
+Execute Steps 2 and 3 above at 2x, 4x, and 8x compression, respectively. 
+For example, with 2x compression, if W is of dimension m * n (uncompressed), 
+apply SVD-based compression with k = int(n / 2). For 4x compression, set k = int(n / 4), 
+and for 8x compression, k = int(n / 8). 
+
+For each compression level, include a model summary and trainable parameter count.
+"""
 def k_for_compression(n, factor):
     """Compute rank k = int(n/factor) with lower bound 1."""
     return max(1, int(n / factor))
 
-## Step 4: Ranks for Entire Network
 def compute_ranks_for_factor(factor):
     """Compute ranks [k1,k2,k3] for a compression factor."""
     return [k_for_compression(100, factor),
             k_for_compression(50, factor),
             k_for_compression(10, factor)]
 
-## Step 4: Run All Compression Factors (2x, 4x, 8x)
-def step4_run_all_compressions(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=10):
+def step4_run_all_compressions(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS):
     """For each factor perform low-rank construction + refinement; collect results."""
     results = {}
     print("\n=== Compression Plan (factor -> ranks) ===")
@@ -209,24 +239,21 @@ def step4_run_all_compressions(baseline_model, data, baseline_params, factors=(2
         }
     return results
 
-## Step 4 Wrapper
-def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epochs=10):
-    """Step 4: Apply Different Degrees of Compression (2x, 4x, 8x).
-
-    Executes Steps 2 & 3 for each factor, reporting ranks, parameter counts, metrics, confusion matrix.
-    """
+def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS):
+    """Apply Steps 2 & 3 for each factor, collecting metrics/results."""
     if baseline_params is None:
         baseline_params = count_params(baseline_model)
     return step4_run_all_compressions(baseline_model, data, baseline_params, factors=factors, comp_epochs=comp_epochs)
 
-# ================== Orchestrator ==================
-## Orchestrator: Executes Steps 1-4 Sequentially
+###############################################################################
+# ORCHESTRATOR (runs Steps 1 -> 4)                                            #
+###############################################################################
 def main():
-    """Run baseline training then all compression/refinement runs; return collected results."""
+    """Run all steps sequentially and return collected results."""
     set_seeds(42)
-    baseline_model, data, base_hist, base_cm = step1(baseline_epochs)
-    baseline_params = count_params(baseline_model)  # after step1
-    compression_results = step4(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=100)
+    baseline_model, data, base_hist, base_cm = step1(BASELINE_EPOCHS)
+    baseline_params = count_params(baseline_model)
+    compression_results = step4(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS)
     return {
         'baseline_history': base_hist.history,
         'baseline_confusion_matrix': base_cm,
@@ -234,4 +261,4 @@ def main():
     }
 
 if __name__ == '__main__':
-    main()=100
+    main()
