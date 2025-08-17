@@ -1,0 +1,6 @@
+# Project dependencies for Exercise #1: Low-Rank Model Compression
+# Pin versions as needed; unpinned here for portability.
+tensorflow
+numpy
+scikit-learn
+matplotlib
