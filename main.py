@@ -12,39 +12,45 @@ from tensorflow.keras import layers
 from sklearn.metrics import confusion_matrix
 
 # CONSTS 
-BASELINE_EPOCHS = 100          # Always train baseline for 100 epochs
-COMPRESSION_REFINEMENT_EPOCHS = 100  # Always refine compressed models for 100 epochs
+BASELINE_EPOCHS = 100 # Train your baseline model for 100 epochs; 
+REFINEMENT_EPOCHS = 10  # Train your compressed model for 10 epochs; 
 
-# Force CPU only execution (ignore GPUs) to simplify environment.
+# Doing this since my gpu doesn't work for some reason, 5080 is not working
 os.environ.setdefault('CUDA_VISIBLE_DEVICES', '')
 
 '''
 UTILITIES 
 '''
-def set_seeds(seed=5):
-    """Set RNG seeds for reproducibility."""
+
+def set_seeds(seed=420):
+    """Random seed using funny number"""
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-def train_and_report(model, data, epochs, tag):
+def train_print_progress(model, data, epochs, tag):
     """Train model; emit per-epoch metrics & confusion matrix."""
     (x_train, y_train), (x_test, y_test) = data
     hist = model.fit(x_train, y_train, validation_data=(x_test, y_test),
                      epochs=epochs, batch_size=128, verbose=2)
     y_pred = np.argmax(model.predict(x_test, verbose=0), axis=1)
     cm = confusion_matrix(y_test, y_pred)
-    print(f"\n=== {tag}: epoch-by-epoch metrics ===")
+    print(f"\n{tag}: Epoch Training")
+
+    # Fancy python formatting
     for i,(trL,trA,vlL,vlA) in enumerate(zip(hist.history['loss'],
                                             hist.history['accuracy'],
                                             hist.history['val_loss'],
                                             hist.history['val_accuracy']),1):
-        print(f"Epoch {i:03d}: loss={trL:.4f} acc={trA:.4f} | val_loss={vlL:.4f} val_acc={vlA:.4f}")
+
+        print(f"Epoch # {i}: loss={trL:.4f} acc={trA:.4f} | val_loss={vlL:.4f} val_acc={vlA:.4f}")
     print(f"\n{tag} — Confusion Matrix (10x10):\n{cm}\n")
     return hist, cm
 
 def count_params(model):
     """Return total trainable parameter count."""
     return int(np.sum([np.prod(v.shape) for v in model.trainable_variables]))
+
+#################################################################
 
 def step1(baseline_epochs=BASELINE_EPOCHS):
     """
@@ -67,7 +73,10 @@ def step1(baseline_epochs=BASELINE_EPOCHS):
     return model, data, hist, cm
 
 def load_and_preprocess_mnist():
-    """Load MNIST, scale to [0,1], flatten to 784 features."""
+    """
+    Load and pre-process the MNIST dataset; report on the pre-processing procedure that you
+    apply in your assignment write-up.
+    """
     (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
     x_train = (x_train.astype('float32') / 255.0).reshape(-1, 28*28)
     x_test  = (x_test.astype('float32')  / 255.0).reshape(-1, 28*28)
@@ -80,28 +89,35 @@ def step1_train_baseline(data, epochs=BASELINE_EPOCHS):
     model.summary()
     print("**************************************************************************")
     print(f"Trainable params (baseline): {count_params(model)}")
-    hist, cm = train_and_report(model, data, epochs, tag='Baseline(100-50-10)')
+    hist, cm = train_print_progress(model, data, epochs, tag='Baseline(100-50-10)')
     return model, hist, cm
 
 
 def build_baseline_model():
-    """Create baseline dense network: 784 -> 100 -> 50 -> 10."""
+    """
+    Train a light-weight, dense, feed-forward neural network (note: not a CNN) so that the first
+    hidden layers has 100 neurons, the next hidden layer has 50, and the final output layer has 10
+    neurons. All the layers should be fully-connected; layers should include conventional bias
+    neurons. Include a model summary with trainable parameter counts in your write-up.
+    """
     model = keras.Sequential([
         layers.Input(shape=(784,)),
-        layers.Dense(100, activation='relu'),
-        layers.Dense(50, activation='relu'),
-        layers.Dense(10, activation='softmax')
+        layers.Dense(100, activation='relu'), #hidden layer 100 neurons
+        layers.Dense(50, activation='relu'), #hidden layer 50 neurons
+        layers.Dense(10, activation='softmax') #output layer 10 neurons
     ])
     model.compile(optimizer=keras.optimizers.Adam(),
                   loss='sparse_categorical_crossentropy',
                   metrics=['accuracy'])
     return model
 
+#################################################################
+
 def step_2_build_compressed_model(baseline_model, ranks):
     """
     Step 2: Generate the Low-Rank Model
 
-    For each weight matrix in your model: 𝑊 (") , 𝑊 ($) , 𝑊 (%) , perform SVD (fine to use a SW
+    For each weight matrix in your model: 𝑊 (1) , 𝑊 (2) , 𝑊 (3) , perform SVD (fine to use a SW
     library function for this), so that 𝑊 (&) ≈ 𝑈 (&) 𝛴 (&) '𝑉 (&)) . To perform compression, your
     SVD decomposition should represent a k-rank approximation to 𝑊 (&) ; in this way, if, say,
     𝑊 (&) is of dimension 𝑚 × 𝑛, then 𝑈 (&) will be of dimension 𝑚 × 𝑘 (where 𝑘 < 𝑛), 𝛴 (&) is of
@@ -125,34 +141,50 @@ def step_2_build_compressed_model(baseline_model, ranks):
     with your assignment write-up.
     """
     assert len(ranks) == 3
-    d_layers = [l for l in baseline_model.layers if isinstance(l, layers.Dense)]
-    (d1, d2, d3) = d_layers
+
+    # Extract Dense layers from the baseline model
+    dense_layers = [layer for layer in baseline_model.layers if isinstance(layer, layers.Dense)]
+    d1, d2, d3 = dense_layers
+
+    # Compress each dense layer using SVD-based factorization
+    # For each weight matrix in your model: 𝑊 (1) , 𝑊 (2) , 𝑊 (3) , perform SVD
     W1a, W1b, b1 = compress_dense_to_two(d1, ranks[0])
     W2a, W2b, b2 = compress_dense_to_two(d2, ranks[1])
     W3a, W3b, b3 = compress_dense_to_two(d3, ranks[2])
-    inp = keras.Input(shape=(784,))
-    z = layers.Dense(W1a.shape[1], activation='linear', use_bias=False, name='proj1')(inp)
-    z = layers.Dense(W1b.shape[1], activation='relu', use_bias=True, name='rec1')(z)
-    z = layers.Dense(W2a.shape[1], activation='linear', use_bias=False, name='proj2')(z)
-    z = layers.Dense(W2b.shape[1], activation='relu', use_bias=True, name='rec2')(z)
-    z = layers.Dense(W3a.shape[1], activation='linear', use_bias=False, name='proj3')(z)
-    out = layers.Dense(W3b.shape[1], activation='softmax', use_bias=True, name='rec3')(z)
-    comp = keras.Model(inp, out, name=_compressed_model_name(ranks))
-    comp.compile(optimizer=keras.optimizers.Adam(),
-                 loss='sparse_categorical_crossentropy',
-                 metrics=['accuracy'])
-    # set weights
-    name_to_layer = {l.name: l for l in comp.layers if isinstance(l, layers.Dense)}
-    name_to_layer['proj1'].set_weights([W1a])
-    name_to_layer['rec1'].set_weights([W1b, b1])
-    name_to_layer['proj2'].set_weights([W2a])
-    name_to_layer['rec2'].set_weights([W2b, b2])
-    name_to_layer['proj3'].set_weights([W3a])
-    name_to_layer['rec3'].set_weights([W3b, b3])
-    return comp
 
-def svd_factorize(W, k):
-    """Rank-k SVD factorization returning (U', V)."""
+    # Build the compressed model using pairs of Dense layers for each original layer
+    inp = keras.Input(shape=(784,))
+    x = layers.Dense(W1a.shape[1], activation='linear', use_bias=False, name='proj1')(inp)
+    x = layers.Dense(W1b.shape[1], activation='relu', use_bias=True, name='rec1')(x)
+    x = layers.Dense(W2a.shape[1], activation='linear', use_bias=False, name='proj2')(x)
+    x = layers.Dense(W2b.shape[1], activation='relu', use_bias=True, name='rec2')(x)
+    x = layers.Dense(W3a.shape[1], activation='linear', use_bias=False, name='proj3')(x)
+    out = layers.Dense(W3b.shape[1], activation='softmax', use_bias=True, name='rec3')(x)
+
+    comp_model = keras.Model(inp, out, name=_compressed_model_name(ranks))
+    comp_model.compile(
+        optimizer=keras.optimizers.Adam(),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    # Set the weights for each layer in the compressed model
+    # Using the recommended set_weights function.
+    layer_map = {layer.name: layer for layer in comp_model.layers if isinstance(layer, layers.Dense)}
+    layer_map['proj1'].set_weights([W1a])
+    layer_map['rec1'].set_weights([W1b, b1])
+    layer_map['proj2'].set_weights([W2a])
+    layer_map['rec2'].set_weights([W2b, b2])
+    layer_map['proj3'].set_weights([W3a])
+    layer_map['rec3'].set_weights([W3b, b3])
+
+    return comp_model
+
+def perform_svd_decomposition(W, k):
+    """
+    For each weight matrix in your model: 𝑊 (") , 𝑊 ($) , 𝑊 (%) , perform SVD.
+    matrices: 𝑊 (&) ≈ 𝑈′(&) '𝑉 (&) ) , where 𝑈′(&) = 𝑈 (&) 𝛴 (&) .
+    """
     U, S, Vt = np.linalg.svd(W, full_matrices=False)
     U_k = U[:, :k]
     S_k = np.diag(S[:k])
@@ -161,32 +193,19 @@ def svd_factorize(W, k):
     return Uprime.astype(np.float32), Vt_k.astype(np.float32)  # V is (k,n)
 
 def compress_dense_to_two(dense_layer, k):
-    """Factor Dense (m->n) into (m->k linear, no bias) + (k->n with activation & bias)."""
+    """Compressing the dense layer using SVD."""
     W, b = dense_layer.get_weights()
-    Uprime, V = svd_factorize(W, k)
+    Uprime, V = perform_svd_decomposition(W, k)
     return Uprime, V, b.astype(np.float32)
-
-
-
 
 def _compressed_model_name(ranks):
     """Build safe model name from rank list."""
     return 'compressed_' + '_'.join(str(r) for r in ranks)
 
-def step3_refine_compressed(comp_model, data, epochs=COMPRESSION_REFINEMENT_EPOCHS, tag='Compressed'):
-    """
-    Step 3: Apply Refinement Training to the Low-Rank Model
 
-    Train your compressed model for 10 epochs. Report the training and test loss and accuracy for
-    each epoch. Include a 10x10 confusion matrix for the test data results on the fully trained model.
+#################################################################
 
-    Note: Do not randomly initialize the weights of your compressed model prior to training.
-    Instead, use the weights learned from the low-rank approximation with the set_weights function,
-    as described in Step 2 above.
-    """
-    return train_and_report(comp_model, data, epochs, tag)
-
-def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS):
+def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epochs=REFINEMENT_EPOCHS):
     """
     Step 4: Apply Different Degrees of Compression
 
@@ -201,22 +220,21 @@ def step4(baseline_model, data, baseline_params=None, factors=(2,4,8), comp_epoc
     if baseline_params is None:
         baseline_params = count_params(baseline_model)
     results = {}
-    print("\n=== Compression Plan (factor -> ranks) ===")
     for f in factors:
         ranks = compute_ranks_for_factor(f)
-        print(f"{f}x -> {ranks}")
+        print(f"{f}x {ranks}")
     for f in factors:
         ranks = compute_ranks_for_factor(f)
         tag = f"Compressed-{f}x"
-        print(f"\n=== Building compressed model {tag} (ranks {ranks}) ===")
         comp = step_2_build_compressed_model(baseline_model, ranks)
         print("**************************************************************************")
         comp.summary()
         print("**************************************************************************")
         comp_params = count_params(comp)
         ratio = comp_params / baseline_params
-        print(f"Trainable params ({tag}): {comp_params} (ratio {ratio:.3f} vs baseline {baseline_params})")
-        hist, cm = step3_refine_compressed(comp, data, epochs=comp_epochs, tag=tag)
+        print(f"params ({tag}): {comp_params}, ratio {ratio} vs baseline {baseline_params}")
+        # PART 3: refinement training
+        hist, cm = train_print_progress(comp, data, epochs=comp_epochs, tag=tag)
         results[tag] = {
             'ranks': ranks,
             'params': comp_params,
@@ -239,11 +257,11 @@ def k_for_compression(n, factor):
 #Pipeline
 def main():
     """Run all steps sequentially and return collected results."""
-    set_seeds(42)
+    set_seeds()
     print("Step 1") 
     baseline_model, data, base_hist, base_cm = step1(BASELINE_EPOCHS)
     baseline_params = count_params(baseline_model)
-    compression_results = step4(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=COMPRESSION_REFINEMENT_EPOCHS)
+    compression_results = step4(baseline_model, data, baseline_params, factors=(2,4,8), comp_epochs=REFINEMENT_EPOCHS)
     return {
         'baseline_history': base_hist.history,
         'baseline_confusion_matrix': base_cm,
